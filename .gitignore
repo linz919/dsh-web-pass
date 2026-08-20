@@ -1,0 +1,6 @@
+node_modules/
+*.log
+password
+.DS_Store
+*.egg-info/
+.npm/

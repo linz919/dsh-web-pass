@@ -1,0 +1,9 @@
+# dsh-web-pass bundle patch（dsh.bundle manifest 要求的加载配置）
+- insert:
+    - id: dsh-web-pass
+      name: dsh-web-pass
+      config:
+        # 访问密码来源的环境变量名。值要设到 dsh web 服务进程的环境里
+        # （例如 systemd 的 Environment=DSH_WEB_PASS_PASSWORD=xxx），
+        # 不要写进本文件——本文件会进 git / 仓库，写明文密码等于泄露。
+        passwordEnv: DSH_WEB_PASS_PASSWORD
