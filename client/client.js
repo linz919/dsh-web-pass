@@ -1,6 +1,5 @@
-// dsh-web-pass 网页客户端：设置页签「网页密码」。
-// 布局与加载格式对齐 dsh-market / dsh-pocket（window.__ModuleLoader__.load 运行时模块加载，
-// 由 modules 节点半动态 /plugins/dsh-web-pass/client.js 提供，无需重打 shell dist）。
+// dsh-web-pass 网页客户端：「网页密码」设置页
+// 会话令牌认证 + 密码强度指示器 + 当前密码验证 + 暗色主题
 window.__ModuleLoader__.load({
   id: "dsh-web-pass",
   factory: (require) => {
@@ -10,16 +9,13 @@ window.__ModuleLoader__.load({
     var React = require("react");
     var h = React.createElement;
 
-    // ---- 与 lib/web-rpc.js 对齐的 RPC 契约 ----
     var CHANNEL = "/dsh-web-pass";
     var E_STATUS = "webpass.status";
     var E_PW_SET = "webpass.password.set";
-    var E_PW_RANDOM = "webpass.password.random";
 
     var name = "dsh-web-pass";
     var inject = ["slots", "connection"];
 
-    // DSH 设计系统变量（带兜底值，缺变量也可读）
     var V = {
       card: { background: "var(--dsw-alias-bg-layer-1,#fff)", border: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", borderRadius: 12, padding: "16px 20px", maxWidth: 500 },
       block: { borderTop: "1px solid var(--dsw-alias-border-l2,#e5e7eb)", marginTop: 16, paddingTop: 16 },
@@ -31,15 +27,27 @@ window.__ModuleLoader__.load({
       ghost: { font: "inherit", cursor: "pointer", border: "1px solid var(--dsw-alias-button-ghost-active-border, var(--dsw-alias-border-l2,#d1d5db))", background: "var(--dsw-alias-bg-layer-1,#fff)", color: "var(--dsw-alias-label-primary,inherit)", height: 36, padding: "0 16px", borderRadius: 999, fontSize: 13, display: "inline-flex", alignItems: "center", justifyContent: "center" }
     };
 
+    // 密码强度校验（与服务端一致）
+    function checkStrength(p) {
+      if (!p) return { ok: false, checks: [] };
+      var checks = [
+        { label: "≥8位", ok: p.length >= 8 },
+        { label: "大写", ok: /[A-Z]/.test(p) },
+        { label: "小写", ok: /[a-z]/.test(p) },
+        { label: "数字", ok: /[0-9]/.test(p) }
+      ];
+      return { ok: checks.every(function (c) { return c.ok; }), checks: checks };
+    }
+
     function WPSSettingsTab(props) {
       var rpcCall = props.rpcCall;
       var _s = React.useState(null); var status = _s[0]; var setStatus = _s[1];
       var _pw = React.useState(""); var pwInput = _pw[0]; var setPwInput = _pw[1];
       var _cf = React.useState(""); var cfInput = _cf[0]; var setCfInput = _cf[1];
+      var _cur = React.useState(""); var curInput = _cur[0]; var setCurInput = _cur[1];
       var _busy = React.useState(false); var busy = _busy[0]; var setBusy = _busy[1];
       var _saved = React.useState(false); var saved = _saved[0]; var setSaved = _saved[1];
       var _err = React.useState(null); var err = _err[0]; var setErr = _err[1];
-      var _newPw = React.useState(null); var newPw = _newPw[0]; var setNewPw = _newPw[1];
 
       React.useEffect(function () {
         var alive = true;
@@ -53,34 +61,35 @@ window.__ModuleLoader__.load({
         return function () { alive = false; clearInterval(t); };
       }, []);
 
-      var save = function (pw, cf) {
+      var save = function (pw, cf, cur) {
         var p = String(pw || "").trim();
         var c = String(cf || "").trim();
+        var k = String(cur || "").trim();
         if (!p) { setErr("请输入新密码"); setSaved(false); return; }
-        if (/^\d+$/.test(p)) { setErr("密码不能是纯数字（至少含字母）"); setSaved(false); return; }
+        var st = checkStrength(p);
+        if (!st.ok) { setErr("密码强度不足：需≥8位，含大写字母、小写字母和数字"); setSaved(false); return; }
         if (!c) { setErr("请再次输入确认密码"); setSaved(false); return; }
         if (p !== c) { setErr("两次输入的密码不一致"); setSaved(false); return; }
-        setBusy(true); setSaved(false); setErr(null); setNewPw(null);
-        rpcCall(E_PW_SET, { password: p, confirm: c }).then(function (r) {
-          if (r && r.ok) { setSaved(true); setPwInput(""); setCfInput(""); }
+        setBusy(true); setSaved(false); setErr(null);
+        rpcCall(E_PW_SET, { password: p, confirm: c, current: k }).then(function (r) {
+          if (r && r.ok) { setSaved(true); setPwInput(""); setCfInput(""); setCurInput(""); }
           else { setErr((r && r.error && r.error.message) || "保存失败"); }
         }).catch(function (e) { setErr(String((e && e.message) || e)); })
           .finally(function () { setBusy(false); });
       };
 
-      var randomize = function () {
-        setBusy(true); setErr(null); setSaved(false); setNewPw(null);
-        rpcCall(E_PW_RANDOM, {}).then(function (r) {
-          if (r && r.ok && typeof r.value.password === "string") { setNewPw(r.value.password); setPwInput(""); }
-          else { setErr((r && r.error && r.error.message) || "生成失败"); }
-        }).catch(function (e) { setErr(String((e && e.message) || e)); })
-          .finally(function () { setBusy(false); });
+      var logout = function () {
+        setBusy(true); setErr(null);
+        fetch("/gate/logout", { method: "POST" }).then(function () {
+          location.reload();
+        }).catch(function (e) { setBusy(false); setErr("退出失败：" + e.message); });
       };
 
       var children = [];
       children.push(h("strong", null, "网页密码 | Web password settings"));
-      children.push(h("div", { style: V.muted }, "设置网页访问密码 | configure the web access password"));
+      children.push(h("div", { style: V.muted }, "设置网页访问密码（密码以 scrypt 哈希存储）| configure the web access password"));
 
+      // 网关状态
       var sb = [];
       if (status) {
         sb.push(h("div", { style: V.row }, "代理状态：", status.proxyRunning ? "运行中" : "未运行", "（端口 ", String(status.proxyPort ?? "-"), "）"));
@@ -91,24 +100,37 @@ window.__ModuleLoader__.load({
       }
       children.push(h("div", { style: V.block }, h("div", { style: { fontWeight: 600, fontSize: 13 } }, "网关状态 | gateway status"), sb));
 
+      // 密码强度指示器
+      var pwSt = checkStrength(pwInput);
+      var strengthEl = pwInput ? h("div", { style: { display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 } },
+        pwSt.checks.map(function (c, i) {
+          return h("span", { key: i, style: { fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid " + (c.ok ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-border-l2,#d1d5db)"), color: c.ok ? "var(--dsw-alias-state-success-primary,#16a34a)" : "var(--dsw-alias-label-tertiary,#8b93a1)" } }, (c.ok ? "✓ " : "") + c.label);
+        })
+      ) : null;
+
+      // 密码修改区
       var pc = [];
-      pc.push(h("div", { style: V.muted }, "设置访问密码（成功保存后旧密码立即作废，所有已登录设备需重新输入）"));
-      pc.push(h("input", { type: "password", value: pwInput, onChange: function (e) { return setPwInput(e.target.value); }, placeholder: "输入新密码（不能纯数字）| New password (letters required)", style: V.input, autoComplete: "one-time-code" }));
-      pc.push(h("input", { type: "password", value: cfInput, onChange: function (e) { return setCfInput(e.target.value); }, placeholder: "再次输入新密码（确认）| Re-enter to confirm", style: V.input, autoComplete: "one-time-code" }));
+      pc.push(h("div", { style: V.muted }, "设置访问密码（保存后旧密码立即作废，其他会话全部吊销）"));
+      if (status) {
+        pc.push(h("div", null,
+          h("div", { style: V.row }, "当前密码："),
+          h("input", { type: "password", value: curInput, onChange: function (e) { return setCurInput(e.target.value); }, placeholder: "输入当前密码（修改时必须）| Current password", style: V.input, autoComplete: "current-password" })));
+      }
+      pc.push(h("input", { type: "password", value: pwInput, onChange: function (e) { return setPwInput(e.target.value); }, placeholder: "新密码（≥8位，含大小写字母和数字）", style: V.input, autoComplete: "new-password" }));
+      pc.push(strengthEl);
+      pc.push(h("input", { type: "password", value: cfInput, onChange: function (e) { return setCfInput(e.target.value); }, placeholder: "再次输入新密码（确认）", style: V.input, autoComplete: "new-password" }));
       pc.push(h("div", { style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" } },
-        h("button", { style: V.primary, onClick: function () { return save(pwInput, cfInput); }, disabled: busy }, busy ? "处理中…" : "保存密码 | Save"),
-        h("button", { style: V.ghost, onClick: randomize, disabled: busy }, busy ? "生成中…" : "🔑 一键随机换密码 | Random")));
-      if (saved) pc.push(h("div", { style: { color: "#16a34a", fontSize: 12, marginTop: 8 } }, "✅ 密码已保存 | password saved"));
-      if (err) pc.push(h("div", { style: { color: "#dc2626", fontSize: 12, marginTop: 8 } }, "❌ " + err));
-      if (newPw) pc.push(
-        h("div", { style: { border: "1px solid var(--dsw-alias-state-warn-primary,#b45309)", borderRadius: 8, padding: "10px 12px", marginTop: 10, background: "var(--dsw-alias-bg-layer-2,#f3f4f6)" } },
-          h("div", { style: { fontWeight: 600, fontSize: 13 } }, "🔑 新密码已生效（请先记下）| new password — save it"),
-          h("div", { style: V.code }, newPw),
-          h("div", { style: { fontSize: 12, color: "#b45309", lineHeight: 1.5 } }, "旧密码已作废；刷新/重开页面后需用这个新密码重新登录。| old password is void; re-login needed after reload.")));
+        h("button", { style: V.primary, onClick: function () { return save(pwInput, cfInput, curInput); }, disabled: busy }, busy ? "处理中…" : "保存密码 | Save")));
+      if (saved) pc.push(h("div", { style: { color: "var(--dsw-alias-state-success-primary,#16a34a)", fontSize: 12, marginTop: 8 } }, "✅ 密码已保存（其他会话已吊销）| saved, other sessions revoked"));
+      if (err) pc.push(h("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 8 } }, "❌ " + err));
       children.push(h("div", { style: V.block }, h("div", { style: { fontWeight: 600, fontSize: 13 } }, "访问密码 | web password"), pc));
 
+      // 登出按钮
       children.push(h("div", { style: V.block },
-        h("a", { href: "/dsh-logs/", target: "_blank", rel: "noreferrer", style: Object.assign({}, V.ghost, { textDecoration: "none" }) },
+        h("button", { style: { ...V.ghost, width: "100%", justifyContent: "center" }, onClick: logout, disabled: busy }, "🚪 退出登录 | Logout")));
+
+      children.push(h("div", { style: V.block },
+        h("a", { href: "/dsh-logs/", target: "_blank", rel: "noreferrer", style: Object.assign({}, V.ghost, { textDecoration: "none", width: "100%", justifyContent: "center" }) },
           "📄 访问日志（谁在试密码）| Access log")));
 
       return h("div", { style: V.card }, children);

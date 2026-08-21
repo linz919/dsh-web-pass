@@ -1,10 +1,19 @@
 {
   "name": "dsh-web-pass",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "lib/index.js",
-  "description": "DSH web-password gate: cookie-password auth + forced first-time setup + Settings 'Web password' tab + 30-day access log. Zero dependencies.",
+  "description": "DSH web-password gate: cookie-password auth + forced first-time setup + Settings 'Web password' tab + size-capped access log. Zero dependencies.",
   "license": "MIT",
+  "author": "linz919",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linz919/dsh-web-pass.git"
+  },
+  "bugs": {
+    "url": "https://github.com/linz919/dsh-web-pass/issues"
+  },
+  "homepage": "https://github.com/linz919/dsh-web-pass#readme",
   "exports": {
     ".": {
       "default": "./lib/index.js"
@@ -31,6 +40,8 @@
     "lib",
     "client",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.en.md",
+    "LICENSE"
   ]
 }
