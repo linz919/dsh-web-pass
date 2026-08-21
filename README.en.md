@@ -22,6 +22,15 @@ The plugin runs a reverse proxy inside the `dsh web` process: it rewrites `Host`
 
 ## Install
 
+**Option 1: from npm (recommended)**
+
+```sh
+dsh plugin --profile web add dsh-web-pass
+# then restart dsh web
+```
+
+**Option 2: from source**
+
 ```sh
 git clone https://github.com/linz919/dsh-web-pass.git
 dsh plugin --profile web add ./dsh-web-pass -w

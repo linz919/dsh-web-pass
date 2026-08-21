@@ -22,6 +22,15 @@
 
 ## 安装
 
+**方式一：从 npm 安装（推荐）**
+
+```sh
+dsh plugin --profile web add dsh-web-pass
+# 然后重启 dsh web
+```
+
+**方式二：从源码安装**
+
 ```sh
 git clone https://github.com/linz919/dsh-web-pass.git
 dsh plugin --profile web add ./dsh-web-pass -w
