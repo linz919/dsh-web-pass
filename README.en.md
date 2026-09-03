@@ -5,12 +5,22 @@
 A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gate** in front of DSH.
 
 - **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Too many wrong-password attempts (default 3) → temporary lockout (401).
+- **Auto-carries DSH's built-in auth**: running inside the `dsh web` process, it exchanges DSH's launch token for a browser cookie and injects it — visitors just pass this gate, **no DSH token/cookie handling needed**.
 - **Forced first-time password setup** (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
 - Adds a **"Web password" tab** to the DSH settings page: gateway status, change the access password (with confirmation and a strength meter), one-click logout.
 - **Login access log** embedded at `/dsh-logs/`: records visitor IPs only for password-verification requests (success / failure / lockout / browsing), auto-refresh, **size-based rotation (1MB per file, 7 history files by default)** with a hard total size cap.
 - Raw IPs are never written to the log — HMAC-SHA256 pseudonymization + network prefix (IPv4 /24, IPv6 /64) keeps it aggregatable without leaking privacy.
 
 No runtime data lives in the plugin repo — everything goes to `$DSH_HOME/dsh-web-pass/` (password hash, sessions, logs).
+
+## DSH built-in auth carrying (new in v0.3.0)
+
+DSH Web has its own browser-auth layer (a per-process launch token that mints a 30-day cookie). Since this plugin lives inside the `dsh web` process, it can obtain the process-token URL via `ctx.connection.authenticatedUrl()`, exchange it internally for DSH's persistent cookie, and **inject that cookie into every forwarded request and WebSocket handshake** — so visitors coming through the gate never see DSH's "authentication required".
+
+- Automatic: pre-warmed at startup, silently refreshed every 6 hours, self-healing after a DSH restart (the next request re-acquires on failure).
+- Safe: the launch token never leaves the process or the wire; externally only the password gate is exposed.
+- Observable: the settings "Web password" tab exposes a `dshAuthHolding` field (whether the DSH cookie is currently held).
+- No configuration needed: enabled automatically whenever `dsh web` provides `ctx.connection`; falls back to the old behavior (visitors need the DSH token) when unavailable.
 
 ## How it works
 

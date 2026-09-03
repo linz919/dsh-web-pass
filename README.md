@@ -5,12 +5,22 @@
 一个**零依赖**的 DeepSeek Harness Web 插件：在 DSH 前面加一道**网页密码门**。
 
 - **Cookie 会话认证**跑在反向代理上（不是 nginx Basic Auth）。密码错误次数过多（默认 3 次）→ 临时锁定（401）。
+- **自动代持 DSH 内置认证**：与 DSH 同进程，自动换取并注入 DSH 的浏览器 cookie——浏览者只需过本密码门，**无需再处理 DSH 的 token/cookie**。
 - **首次访问强制设置密码**（输入两次；强度要求 ≥8 位且含大小写字母和数字）。
 - DSH 设置页新增**「网页密码」标签页**：网关状态、修改访问密码（带确认与强度指示）、一键退出登录。
 - **登录访问日志**内嵌在 `/dsh-logs/`：只记录密码验证相关请求的访客 IP（成功 / 失败 / 锁定 / 浏览），自动刷新，**按大小轮转（默认单文件 1MB、保留 7 份历史）**，体积有硬上限。
 - 日志不落原始 IP——用 HMAC-SHA256 假名化 + 网络前缀（IPv4 /24、IPv6 /64），可聚合分析又不泄隐私。
 
 插件仓库里不落任何运行时数据——数据都在 `$DSH_HOME/dsh-web-pass/`（密码哈希、会话、日志）。
+
+## DSH 内置认证代持（v0.3.0 新增）
+
+DSH Web 自带一层浏览器认证（进程 launch-token 换 30 天 cookie）。本插件运行在 `dsh web` 进程内部，可经 `ctx.connection.authenticatedUrl()` 拿到带 process-token 的 URL，内部换取 DSH 的持久 cookie 后，**注入所有转发到上游的请求与 WebSocket 握手**——因此经密码门进入的浏览者永远看不到 DSH 的 "authentication required"。
+
+- 自动：启动预热 + 每 6 小时静默刷新，DSH 重启后自愈（失效时下一请求自动重取）。
+- 安全：launch-token 不出进程、不出网络；对外仍只暴露密码门。
+- 状态可见：设置页「网页密码」标签页新增 `dshAuthHolding` 字段（是否已代持 DSH cookie）。
+- 无配置项：只要 `dsh web` 提供 `ctx.connection` 即自动启用；不可用时回退为旧行为（浏览者仍需 DSH token）。
 
 ## 工作原理
 
