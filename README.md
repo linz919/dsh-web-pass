@@ -6,6 +6,7 @@
 
 - **Cookie 会话认证**跑在反向代理上（不是 nginx Basic Auth）。密码错误次数过多（默认 3 次）→ 临时锁定（401）。
 - **自动代持 DSH 内置认证**：与 DSH 同进程，自动换取并注入 DSH 的浏览器 cookie——浏览者只需过本密码门，**无需再处理 DSH 的 token/cookie**。
+- **非 loopback 页面解锁 Host 设置**（v0.3.1 新增）：经 IP / 域名访问时，设置里的「插件配置」「模型」「常规」不再空白（见下文）。
 - **首次访问强制设置密码**（输入两次；强度要求 ≥8 位且含大小写字母和数字）。
 - DSH 设置页新增**「网页密码」标签页**：网关状态、修改访问密码（带确认与强度指示）、一键退出登录。
 - **登录访问日志**内嵌在 `/dsh-logs/`：只记录密码验证相关请求的访客 IP（成功 / 失败 / 锁定 / 浏览），自动刷新，**按大小轮转（默认单文件 1MB、保留 7 份历史）**，体积有硬上限。
@@ -21,6 +22,16 @@ DSH Web 自带一层浏览器认证（进程 launch-token 换 30 天 cookie）�
 - 安全：launch-token 不出进程、不出网络；对外仍只暴露密码门。
 - 状态可见：设置页「网页密码」标签页新增 `dshAuthHolding` 字段（是否已代持 DSH cookie）。
 - 无配置项：只要 `dsh web` 提供 `ctx.connection` 即自动启用；不可用时回退为旧行为（浏览者仍需 DSH token）。
+
+## 非 loopback 页面解锁 Host 设置（v0.3.1 新增）
+
+DSH 客户端只在页面地址为 `localhost`/`127.x` 时才挂载宿主设置文档；经局域网 IP 或域名访问（包括走本密码门）时，设置一律降级为内存模式——**设置里的「插件配置」「模型」「常规」等标签页会整页空白**（插件清单、聊天等纯 RPC 功能不受影响）。
+
+本插件在代理层对 DSH 下发的 `client-connection` 模块做一次定向改写，把该判定补为恒真：设置页在 3081（LAN IP / 公网域名）下完整可用。浏览器地址不变，密码门仍是唯一入口。
+
+- 默认开启；不需要时配置 `clientHostTrust: false` 恢复 DSH 原生行为。
+- 改写后的模块以 `cache-control: no-cache` 下发。**从旧版本升级后每台设备需强刷一次（Ctrl+F5）**——旧模块此前按 `immutable` 缓存一年，普通刷新不会回源；强刷一次后即自动保持最新。
+- DSH 未来版本若变更了判定代码（改写落空），日志会提示「未找到 isLoopback 锚点」，此时设置页回到空白，其余功能不受影响，请随插件更新同步锚点。
 
 ## 工作原理
 
@@ -67,6 +78,7 @@ ss -tln | grep -E ':3081|:3082'
 | `loginLockMs` | `60000` | 超次后的锁定时长（毫秒） |
 | `passwordEnv` | `DSH_WEB_PASS_PASSWORD` | 提供密码的环境变量名 |
 | `trustProxy` | `false` | 是否信任 `X-Forwarded-For` / `CF-Connecting-IP` 头（用于访客 IP 识别与登录限速） |
+| `clientHostTrust` | `true` | 非 loopback 页面（IP/域名访问）也启用 Host 设置文档；`false` 恢复 DSH 原生行为（仅 localhost 可见设置内容） |
 | `logMaxBytes` | `1048576` | 访问日志单文件大小上限（字节），达到即轮转，下限 64KB |
 | `logMaxFiles` | `7` | 轮转后保留的历史文件份数（`access.log.1` … `access.log.N`），超出自动删除 |
 

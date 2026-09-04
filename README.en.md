@@ -6,6 +6,7 @@ A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gat
 
 - **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Too many wrong-password attempts (default 3) → temporary lockout (401).
 - **Auto-carries DSH's built-in auth**: running inside the `dsh web` process, it exchanges DSH's launch token for a browser cookie and injects it — visitors just pass this gate, **no DSH token/cookie handling needed**.
+- **Unlocks Host settings on non-loopback pages** (new in v0.3.1): when accessed via IP / domain name, the "Plugin configuration", "Models" and "General" settings pages are no longer blank (see below).
 - **Forced first-time password setup** (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
 - Adds a **"Web password" tab** to the DSH settings page: gateway status, change the access password (with confirmation and a strength meter), one-click logout.
 - **Login access log** embedded at `/dsh-logs/`: records visitor IPs only for password-verification requests (success / failure / lockout / browsing), auto-refresh, **size-based rotation (1MB per file, 7 history files by default)** with a hard total size cap.
@@ -21,6 +22,16 @@ DSH Web has its own browser-auth layer (a per-process launch token that mints a 
 - Safe: the launch token never leaves the process or the wire; externally only the password gate is exposed.
 - Observable: the settings "Web password" tab exposes a `dshAuthHolding` field (whether the DSH cookie is currently held).
 - No configuration needed: enabled automatically whenever `dsh web` provides `ctx.connection`; falls back to the old behavior (visitors need the DSH token) when unavailable.
+
+## Unlock Host settings on non-loopback pages (new in v0.3.1)
+
+The DSH client only mounts the host settings document when the page address is `localhost`/`127.x`; accessed via a LAN IP or a domain name (including through this gate), settings degrade to in-memory mode — **the "Plugin configuration", "Models" and "General" tabs render blank** (pure-RPC features like the plugin list and chat are unaffected).
+
+This plugin performs one targeted rewrite of the `client-connection` module served by DSH, making that check always true: the settings pages work fully on :3081 (LAN IP / public domain). The browser URL is unchanged and the password gate remains the only entry point.
+
+- On by default; set `clientHostTrust: false` in the config to restore DSH's native behavior.
+- The rewritten module is served with `cache-control: no-cache`. **After upgrading from an older version, hard-refresh once per device (Ctrl+F5)** — the old module was cached as `immutable` for a year, so a normal reload never reaches the server; after that one hard refresh everything stays current automatically.
+- If a future DSH version changes the check (the rewrite no longer matches), the log warns "isLoopback anchor not found"; settings go back to blank while everything else keeps working — update the anchor together with the plugin.
 
 ## How it works
 
@@ -67,6 +78,7 @@ From plugin config (the `config` section of `cordis.patch.yml`, optional):
 | `loginLockMs` | `60000` | Lockout duration in milliseconds |
 | `passwordEnv` | `DSH_WEB_PASS_PASSWORD` | Name of the env var providing the password |
 | `trustProxy` | `false` | Trust `X-Forwarded-For` / `CF-Connecting-IP` headers (for visitor IP identification and login rate limiting) |
+| `clientHostTrust` | `true` | Mount the host settings document on non-loopback pages (IP/domain access); `false` restores DSH's native behavior (settings only visible from localhost) |
 | `logMaxBytes` | `1048576` | Max size of one access-log file in bytes; rotation triggers when reached, floor 64KB |
 | `logMaxFiles` | `7` | Number of rotated history files kept (`access.log.1` … `access.log.N`); older ones are deleted automatically |
 
