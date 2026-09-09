@@ -2,47 +2,51 @@
 
 > [简体中文](README.md) | English
 
-A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gate** in front of DSH.
+A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gate** in front of DSH, with one-password-per-backend routing for guest and tool entries.
+
+```
+browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (owner DSH, runs this plugin)
+                                                    ├→ 127.0.0.1:3085 (clean guest DSH, optional)
+                                                    └→ 127.0.0.1:5101 (openclaw, fnOS and other local services, optional)
+```
+
+## Feature overview
+
+**Auth & sessions**
 
 - **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Too many wrong-password attempts (default 3) → temporary lockout (401).
-- **Multi-password multi-upstream** (new in v0.3.2): one password per backend — the owner password enters the main DSH, a guest password enters a clean DSH, and more passwords can front local services like openclaw. The login page stays a single password box; the gateway matches the password and routes accordingly; errors stay generic and never reveal which entry.
-- **Add upstreams from the settings page** (new in v0.3.3): fill "label + upstream" in the upstream table and click Add — new entries start disabled with no password; they persist in the data dir (`upstreams.json`) across restarts, and patch rows keep working as before.
-- **2-day sliding sessions** (since v0.3.2, previously fixed 24h): every authenticated request with less than 1 day of validity left renews to 2 days — daily users never get kicked, idle users re-login after 2 days.
-- **Auto-carries DSH's built-in auth**: running inside the `dsh web` process, it exchanges DSH's launch token for a browser cookie and injects it — visitors just pass this gate, **no DSH token/cookie handling needed**.
-- **Unlocks Host settings on non-loopback pages** (new in v0.3.1): when accessed via IP / domain name, the "Plugin configuration", "Models" and "General" settings pages are no longer blank (see below).
 - **Forced first-time password setup** (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
-- Adds a **"Web password" tab** to the DSH settings page: gateway status, change the access password (with confirmation and a strength meter), one-click logout.
-- **Login access log** embedded at `/dsh-logs/`: records visitor IPs only for password-verification requests (success / failure / lockout / browsing), auto-refresh, **size-based rotation (1MB per file, 7 history files by default)** with a hard total size cap.
-- Raw IPs are never written to the log — HMAC-SHA256 pseudonymization + network prefix (IPv4 /24, IPv6 /64) keeps it aggregatable without leaking privacy.
+- **2-day sliding sessions** (since v0.3.2, previously fixed 24h): every authenticated request with less than 1 day of validity left renews to 2 days — daily users never get kicked, idle users re-login after 2 days.
+- **Logout anywhere** (v0.3.3): non-owner entries get a "🚪 logout" chip in the page corner — one click clears the session and returns to the login page; or visit `/gate/logout` directly (GET/POST).
 
-No runtime data lives in the plugin repo — everything goes to `$DSH_HOME/dsh-web-pass/` (password hash, sessions, logs).
+**Multi-password multi-upstream (guest mode, v0.3.2)**
 
-## DSH built-in auth carrying (new in v0.3.0)
+- One password per backend: the owner password enters the main DSH, a guest password enters a clean DSH, and more passwords can front local services like openclaw or fnOS. One password box for all; errors stay generic and never reveal which entry.
+- **Add upstreams from the settings page** (v0.3.3): fill "label + upstream" in the upstream table and click Add — takes effect immediately, no restart; new rows start disabled with no password; stored in `upstreams.json` (survives restarts), patch rows keep working.
+- See [Multi-password multi-upstream](#multi-password-multi-upstream-guest-mode) below.
 
-DSH Web has its own browser-auth layer (a per-process launch token that mints a 30-day cookie). Since this plugin lives inside the `dsh web` process, it can obtain the process-token URL via `ctx.connection.authenticatedUrl()`, exchange it internally for DSH's persistent cookie, and **inject that cookie into every forwarded request and WebSocket handshake** — so visitors coming through the gate never see DSH's "authentication required".
+**DSH enhancements**
 
-- Automatic: pre-warmed at startup, silently refreshed every 6 hours, self-healing after a DSH restart (the next request re-acquires on failure).
-- Safe: the launch token never leaves the process or the wire; externally only the password gate is exposed.
-- Observable: the settings "Web password" tab exposes a `dshAuthHolding` field (whether the DSH cookie is currently held).
-- No configuration needed: enabled automatically whenever `dsh web` provides `ctx.connection`; falls back to the old behavior (visitors need the DSH token) when unavailable.
+- **Auto-carries DSH's built-in auth** (v0.3.0): running inside the `dsh web` process, it exchanges DSH's launch token for a browser cookie and injects it — visitors just pass this gate, **no DSH token/cookie handling needed**.
+- **Unlocks Host settings on non-loopback pages** (v0.3.1): when accessed via IP / domain name, the "Plugin configuration", "Models" and "General" settings pages are no longer blank (see below).
 
-## Unlock Host settings on non-loopback pages (new in v0.3.1)
+**Logs & observability**
 
-The DSH client only mounts the host settings document when the page address is `localhost`/`127.x`; accessed via a LAN IP or a domain name (including through this gate), settings degrade to in-memory mode — **the "Plugin configuration", "Models" and "General" tabs render blank** (pure-RPC features like the plugin list and chat are unaffected).
+- **Login access log** embedded at `/dsh-logs/`: password-verification requests only; size-based rotation (default 1MB × 7 files) with a hard total size cap; IPs are pseudonymized (HMAC-SHA256 + network prefix), raw IPs never stored.
 
-This plugin performs one targeted rewrite of the `client-connection` module served by DSH, making that check always true: the settings pages work fully on :3081 (LAN IP / public domain). The browser URL is unchanged and the password gate remains the only entry point.
+**Fixed in v0.3.4**
 
-- On by default; set `clientHostTrust: false` in the config to restore DSH's native behavior.
-- The rewritten module is served with `cache-control: no-cache`. **After upgrading from an older version, hard-refresh once per device (Ctrl+F5)** — the old module was cached as `immutable` for a year, so a normal reload never reaches the server; after that one hard refresh everything stays current automatically.
-- If a future DSH version changes the check (the rewrite no longer matches), the log warns "isLoopback anchor not found"; settings go back to blank while everything else keeps working — update the anchor together with the plugin.
+- Proxied responses no longer carry the gate's security headers: every proxied response used to be stamped with `X-Frame-Options: DENY` and friends (meant to protect the login page), which blanked pages that backends like fnOS embed via same-origin iframes — Docker / suite apps showed "refused to connect" through the gate. These headers now apply only to the gate's own pages (login / logs); proxied responses keep the upstream's original headers, and any security headers the upstream itself sends still take effect.
+
+> No runtime data lives in the plugin repo — everything is under `$DSH_HOME/dsh-web-pass/` (password hashes, sessions, logs).
 
 ## How it works
 
-```
-Browser → (TLS / reverse proxy) → dsh-web-pass :3081 → 127.0.0.1:3080 (DSH)
-```
+The plugin runs a reverse proxy inside the `dsh web` process: it rewrites `Host`/`Origin` to the loopback address so DSH's browser trust checks pass **without any DSH configuration changes**, and layers cookie password auth on top. TLS is usually terminated upstream (reverse proxy / tunnel / nginx).
 
-The plugin runs a reverse proxy inside the `dsh web` process: it rewrites `Host`/`Origin` to the loopback address so it passes DSH's browser trust check **without changing any DSH configuration**, and layers cookie password authentication on top. TLS is usually terminated upstream (reverse proxy / tunnel / nginx).
+- **The gate does not forward compression negotiation** (v0.3.3): forwarded requests always strip `accept-encoding` so the upstream replies uncompressed (nginx enables gzip by default, which would skip all injections — polyfill / module rewrite / logout chip all depend on plaintext); compression is done by the reverse proxy in front of the gate.
+- For `dsh: true` backends: DSH auth carrying + targeted `client-connection` module rewrite (see the two sections below).
+- For `dsh: false` backends (fnOS, openclaw, etc.): pass through as-is, without DSH cookies or forced security headers.
 
 ## Install
 
@@ -61,7 +65,7 @@ dsh plugin --profile web add ./dsh-web-pass -w
 # then restart dsh web
 ```
 
-Verify it is loaded:
+Confirm it is loaded:
 
 ```sh
 ss -tln | grep -E ':3081|:3082'
@@ -69,74 +73,110 @@ ss -tln | grep -E ':3081|:3082'
 
 ## Configuration
 
-**Every option has a built-in default — the plugin works with no configuration at all** (log rotation defaults to 1MB × 7 files). Even if `cordis.patch.yml` gets overwritten while installing other plugins and loses your custom settings, nothing breaks: log rotation falls back to the built-in defaults, and the password environment variable name falls back to the built-in `DSH_WEB_PASS_PASSWORD`.
+**Every option has a built-in default — the plugin works with no configuration at all** (log rotation defaults to 1MB × 7 files). Even if `cordis.patch.yml` gets overwritten or loses custom settings while installing other plugins, nothing breaks: log rotation falls back to the built-in defaults, and the password env var name falls back to the built-in `DSH_WEB_PASS_PASSWORD`.
 
-From plugin config (the `config` section of `cordis.patch.yml`, optional):
+From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 
 | Option | Default | Description |
 |---|---|---|
 | `port` | `3081` | Reverse proxy listen port |
 | `logViewerPort` | `3082` | Embedded log viewer port |
-| `maxLoginAttempts` | `3` | Allowed wrong-password attempts before lockout |
-| `loginLockMs` | `60000` | Lockout duration in milliseconds |
+| `maxLoginAttempts` | `3` | Wrong-password attempts allowed before lockout |
+| `loginLockMs` | `60000` | Lockout duration after too many attempts (ms) |
 | `passwordEnv` | `DSH_WEB_PASS_PASSWORD` | Name of the env var providing the password |
 | `trustProxy` | `false` | Trust `X-Forwarded-For` / `CF-Connecting-IP` headers (for visitor IP identification and login rate limiting) |
-| `clientHostTrust` | `true` | Mount the host settings document on non-loopback pages (IP/domain access); `false` restores DSH's native behavior (settings only visible from localhost) |
-| `logMaxBytes` | `1048576` | Max size of one access-log file in bytes; rotation triggers when reached, floor 64KB |
-| `logMaxFiles` | `7` | Number of rotated history files kept (`access.log.1` … `access.log.N`); older ones are deleted automatically |
-| `upstreams` | `[]` | Multi-password multi-upstream table (see "Multi-password multi-upstream" below): each entry has `label` / `passwordEnv` / `host` / `port` / `clientHostTrust` / `dsh` / `enabled`; empty means the v0.3.x single-password behavior |
+| `clientHostTrust` | `true` | Enable Host settings document on non-loopback pages (IP/domain access); `false` restores DSH's native behavior (settings only visible on localhost) |
+| `logMaxBytes` | `1048576` | Access log per-file size cap (bytes); rotates when reached, minimum 64KB |
+| `logMaxFiles` | `7` | Number of rotated history files to keep (`access.log.1` … `access.log.N`); older ones auto-deleted |
+| `upstreams` | `[]` | Multi-password multi-upstream table (see below): each row has `label` / `passwordEnv` / `host` / `port` / `clientHostTrust` / `dsh` / `enabled`; omit for single-password behavior |
 
-> **About `trustProxy`**: when off (the default), visitor IP and login rate limiting use only the direct socket address, preventing forged XFF headers from polluting logs or bypassing rate limits. Enable it only when a trusted reverse proxy (nginx, Cloudflare tunnel, etc.) sits in front of the gateway.
+> **About `trustProxy`**: when off (default), visitor IPs and login rate limiting rely only on the socket address, preventing forged XFF headers from polluting logs or bypassing rate limits. Enable it only when a trusted reverse proxy (nginx, Cloudflare tunnel, etc.) sits in front of the gate.
 
-## Multi-password multi-upstream (new in v0.3.2: guest mode)
+### Password storage
 
-```
-Browser → dsh-web-pass :3081 → by password → 127.0.0.1:3080 (owner's main DSH)
-                                          → 127.0.0.1:3085 (guest's clean DSH)
-                                          → 127.0.0.1:5101 (openclaw or another local service)
-```
+- **Empty by default.** First visit to 3081 forces the setup page (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
+- Priority (per entry): environment variable (e.g. `DSH_WEB_PASS_PASSWORD`, set in the `dsh web` service environment) **>** file `$DSH_HOME/dsh-web-pass/password` (admin entry) or `password.<i>` (entry i, scrypt hash).
+- If cleared (env var / file deleted) → next visit re-enters the setup page.
+- `cordis.patch.yml` only references the env var **name** — never write plaintext passwords into it (the file goes into git / the repo).
+- Changing a password on the settings page never asks for the old one; on save the old password is invalidated immediately and all its sessions are revoked (2-day sliding sessions included). Owner forgot the password: delete the file (deleting `sessions.jsonl` in the same directory too is cleaner) to return to the forced setup page; for env-var passwords, `unset` and restart.
 
-- **One row = one password + one backend**: preferred way (new in v0.3.3): fill **label + upstream (host:port)** in the settings-page upstream table and click "Add" — takes effect immediately, no restart; new rows **start disabled with no password**. You can still add a row to `upstreams` in `cordis.patch.yml` and **restart** `dsh web`. Rows added from the page persist in `$DSH_HOME/dsh-web-pass/upstreams.json` (0600, survives restart), appended after patch rows; password values can be changed live on the settings "Web password" tab without a restart.
-- **Only the owner sets the guest password**: no registration page. Use the upstream table's "Reset password" or the unified box below it (pick the entry first — clicking a row pre-selects it). Saving voids that entry's old password immediately and revokes all its sessions; no current password is required (the login session itself is the credential).
-- **Entries must have distinct passwords**: saving is rejected when the new password equals another entry's env-var plaintext.
-- **One login box**: a wrong password always answers "wrong password, try again", never revealing which entry; rate limiting shares one counter across entries. When an entry's backend is down, that entry's login says "entry not enabled yet" while the owner keeps working.
-- **Guests never see the owner**: point the guest entry at a clean DSH (new port + new data dir, without this plugin) for natural empty history; keep that entry's `clientHostTrust` at `false` (the default) so the guest settings stay blank and models can't be changed. The gate only routes — backends are your own job, bound to `127.0.0.1`.
-- **DSH carrying/rewriting is per entry**: entries with `dsh: true` each hold their own DSH cookie and may rewrite the module; point openclaw and other non-DSH services at `dsh: false` (the default) for plain passthrough, so no DSH cookie leaks to them.
-- **Management lives only in the owner's room**: the settings tab (upstream table, log entry `/dsh-logs/`) exists only on the main DSH carrying this plugin; the guest's clean room has no such tab, so guests can't touch management. Disabling an entry kicks its sessions immediately (no restart); deleting takes effect immediately (soft delete: row hidden, indexes unchanged), and removing the row from the patch + restart makes it permanent; the admin entry can't be disabled or deleted.
-- **Entry index = session binding key**: sessions bind to an entry's position in the table, ordered "admin → patch rows → page-added rows". Append-only + soft delete keeps indexes stable; if you manually reorder `upstreams` in the patch, clear `sessions.jsonl` in the same directory before restarting, otherwise old sessions (≤2 days) may map to a different backend.
-- **Log out from anywhere** (v0.3.3): guest/tool rooms have no settings tab — their pages automatically get a floating "🚪 退出" chip at the bottom-right (small, semi-transparent), clicking it clears the session and returns to the login page; `/gate/logout` also works directly (GET or POST). The owner's settings tab keeps its own logout button.
-- **The gate strips `accept-encoding`** (v0.3.3): forwarded requests never negotiate compression, so upstreams answer uncompressed (nginx defaults to gzip, which would skip every injection — polyfill, module rewrite, logout chip); compression is the job of any reverse proxy in front of the gate.
-- **Multiple identities in one browser**: cookies are shared browser-wide (tabs included), so one browser holds a single entry login at a time; to use several identities side by side (e.g. DSH and fnOS together), open separate **incognito windows** and log into each entry there (incognito cookies are isolated) — no need to log each other out.
-- **Logs carry the entry**: each access-log line ends with the entry label (pre-v0.3.2 lines have no such column and show `-`), filterable by entry.
-- **Upgrading**: both DSH instances share one binary — upgrade once; restart the main one first and verify the owner login + settings, then restart the guest one and verify it is clean.
+## Multi-password multi-upstream (guest mode)
 
-## Password storage
+### Adding, enabling and disabling
 
-- **Empty by default.** The first visit to port 3081 forces the setup page (enter twice; ≥8 chars including upper- and lowercase letters and digits).
-- Priority (per entry): env var (e.g. `DSH_WEB_PASS_PASSWORD`, set in the `dsh web` service environment) **>** file `$DSH_HOME/dsh-web-pass/password` (admin entry) or `password.<i>` (entry i, scrypt hash).
-- If cleared (env var / file removed) → the next visit shows the setup page again.
-- `cordis.patch.yml` only references the env var **name** — never put a plaintext password in it (that file goes into git / the repo).
-- Changing a password needs no current password; saving voids that entry's old password immediately and revokes all its sessions (2-day sliding sessions included). Owner forgot the password: delete the file (delete `sessions.jsonl` alongside for a cleaner cut) to return to the forced setup page; when an env var is used, `unset` it first and restart.
+- **One row = one password + one backend**: preferred way — fill **label + upstream (host:port)** in the settings-page upstream table and click "Add" (takes effect immediately, no restart; new rows **start disabled with no password**); or add a row to `upstreams` in `cordis.patch.yml` and **restart** `dsh web`. Rows added from the page persist in `$DSH_HOME/dsh-web-pass/upstreams.json` (0600, survives restart), coexist with patch rows and are appended after them; password values can be changed live on the settings "Web password" tab without a restart.
+- Disabling a row kicks its sessions instantly (no restart); deleting a row invalidates it immediately (soft delete: row hidden, index unchanged); deleting the patch row and restarting removes it completely; the admin entry cannot be disabled or deleted.
+
+### Password rules
+
+- **Guest passwords are set by the owner only**: there is no registration page. Use the row's "reset password" button in the settings upstream table, or the unified reset box below (selecting a table row auto-selects the entry).
+- **Passwords must differ across entries**: setting a password that duplicates another entry's env-var plaintext is rejected.
+
+### Login behavior
+
+- **One login box for all**: wrong passwords always report "wrong password, please retry" without revealing which entry; rate limiting shares one counter across entries. If a backend is down, that entry's login reports "this entrance is currently unavailable" while the owner is unaffected.
+- **Multiple identities in one browser**: cookies are shared per browser (not per tab), so one browser holds at most one entry's login at a time; to use several identities side by side (e.g. DSH and fnOS), open separate **private/incognito windows** and log into the respective entries (their cookies are independent) — no need to log out of each other.
+
+### Isolation and management
+
+- **Guests never see the owner**: run a clean DSH for guests (new port + new data dir, without this plugin) so its records are naturally empty; keep guest entries at `clientHostTrust: false` (default) so guest settings pages stay blank and the model cannot be changed. The gate only forwards — it does not run backends; backends run themselves and bind `127.0.0.1` only.
+- **Only DSH backends get auth carrying / rewriting**: entries with `dsh: true` each hold their own DSH cookie and get the module rewrite; for reverse-proxying non-DSH services like openclaw or fnOS keep `dsh: false` (default) for pass-through, avoiding leaking DSH cookies to them.
+- **The admin surface lives only in the owner's DSH**: the settings page (including the upstream table and the `/dsh-logs/` entry) exists only in the main DSH that runs this plugin; guest clean DSH instances don't have it, so guests cannot touch it.
+- **Logs carry the entry**: each access-log line ends with the entry name (older lines show `-`), filterable by entry.
+
+### Entry index and session binding (upgrade notes)
+
+- **Entry index = session binding key**: sessions bind to an entry's position in the table, ordered "admin → patch rows → page-added rows". Append-only; soft deletes keep indexes stable; if you manually reorder `upstreams` rows in the patch, clear `sessions.jsonl` in the same directory before restarting, otherwise old sessions (≤2 days) may map to a different backend.
+- **Upgrade note**: both DSH instances share one copy of the program — upgrade once; restart the owner's first and verify owner login + settings page, then restart the guest's and verify it stays clean.
+
+## DSH built-in auth carrying
+
+DSH Web ships with a browser-auth layer (process launch-token exchanged for a 30-day cookie). This plugin runs inside the `dsh web` process and can obtain a process-token URL via `ctx.connection.authenticatedUrl()`, internally exchange it for DSH's persistent cookie, and **inject it into every forwarded request and WebSocket handshake** — visitors behind the password gate never see DSH's "authentication required".
+
+- Automatic: warm-up on start + silent refresh every 6 hours; self-heals after DSH restarts (the next request re-fetches on failure).
+- Secure: the launch-token never leaves the process or the network; only the password gate is exposed externally.
+- Visible status: the settings "Web password" tab shows a `dshAuthHolding` field (whether the DSH cookie is being carried).
+- Zero configuration: enabled automatically whenever `dsh web` provides `ctx.connection`; falls back to the old behavior otherwise (visitors still need a DSH token).
+
+## Unlock Host settings on non-loopback pages
+
+DSH's client only mounts the host settings document when the page URL is `localhost`/`127.x`; via LAN IP or domain (including through this gate) settings degrade to memory mode — the **"Plugin configuration", "Models" and "General" tabs go completely blank** (pure-RPC features like the plugin list and chat are unaffected).
+
+The plugin performs one targeted rewrite of DSH's `client-connection` module at the proxy layer, forcing that check to true: the settings page works fully on 3081 (LAN IP / public domain). The browser URL is unchanged and the password gate remains the only entrance.
+
+- On by default; set `clientHostTrust: false` to restore DSH's native behavior.
+- The rewritten module is served with `cache-control: no-cache`. **After upgrading, hard-refresh once per device (Ctrl+F5)** — the old module was cached `immutable` for a year and a normal refresh won't re-fetch; after one hard refresh it stays current automatically.
+- If a future DSH version changes that check (rewrite misses), the log reports "isLoopback anchor not found"; the settings page goes blank again while everything else keeps working — sync the anchor with the plugin update.
 
 ## Access log
 
-- Page entry `/dsh-logs/` (also reachable from the "Access log" button on the settings page): only requests to `/gate-login`, `/gate/setup`, `/gate/logout` are recorded; semantics are derived from method + path + status code:
-  - ✅ Login success (POST login → 302)
-  - ❌ Wrong password (POST login → 200)
-  - 🔒 Lockout (POST login → 401)
-  - 👁 Login/setup page viewed (GET browse)
-  - 🚪 Logout (POST logout)
-  - 🔑 First-time setup completed (POST setup → 302)
-- Times are rendered in the **server's local timezone**; auto-refresh every 5 seconds; filter by IP / request keyword.
-- File: `$DSH_HOME/dsh-web-pass/access.log` — **rotated by size**: when the file reaches `logMaxBytes` (default 1MB) it rolls over to `access.log.1`, older ones shift to `access.log.2` …, keeping at most `logMaxFiles` files (default 7); the oldest is deleted automatically. Total log size is therefore hard-capped (~8MB by default) and never grows unbounded.
-- Each line ends with the entry label (e.g. the guest entry logs its label; pre-v0.3.2 lines have no such column and show `-`), filterable by entry.
-- The IP pseudonymization key is stored in `.hmac-key` in the same directory (auto-generated, mode 0600); **do not delete it**, or the same IP will produce new pseudonyms and aggregation analysis breaks.
+- Page at `/dsh-logs/` (also reachable via the settings page "Access log" button): only requests to `/gate-login`, `/gate/setup`, `/gate/logout` are recorded, with semantics derived from "method + path + status":
+  - ✅ verified (POST login → 302)
+  - ❌ wrong password (POST login → 200)
+  - 🔒 locked out (POST login → 401)
+  - 👁 login / setup page opened (GET browse)
+  - 🚪 logout (POST logout)
+  - 🔑 first-time setup completed (POST setup → 302)
+- Times render in the **server's local timezone**; auto-refresh every 5s; filter by IP / request keyword.
+- File: `$DSH_HOME/dsh-web-pass/access.log` — **size-based rotation**: when a file reaches `logMaxBytes` (default 1MB) it rolls to `access.log.1`, older ones shift to `access.log.2` …, keeping at most `logMaxFiles` (default 7) with the oldest auto-deleted. Total log size is therefore hard-capped (≈8MB by default) and never grows unbounded.
+- The IP pseudonymization key lives in `.hmac-key` in the same directory (auto-generated, 0600); **do not delete it**, otherwise the same IP gets new pseudonyms and aggregate analysis breaks.
 
 ## Security notes
 
-- One password per backend (multi-password multi-upstream); no per-user accounts / 2FA.
-- **Always expose over HTTPS** (upstream TLS); never map the plain HTTP port directly to the public internet.
-- Login rate limiting and logged IPs use the socket address by default; with `trustProxy` enabled they use `X-Forwarded-For` / `CF-Connecting-IP` — for identification reference, not a security boundary.
+- One password per backend (multi-password multi-upstream), no accounts / 2FA.
+- **Always expose via HTTPS** (upstream TLS); never port-map a plain HTTP port straight to the internet.
+- The gate's own pages (login / logs) carry `X-Frame-Options: DENY` and other security headers; proxied responses get no extra security headers (since v0.3.4), and whatever the upstream itself sends passes through as-is.
+- Login rate limiting and log IPs use the socket address by default; with `trustProxy` they use `X-Forwarded-For` / `CF-Connecting-IP` — for identification, not a security boundary.
+
+## Version history
+
+| Version | Highlights |
+|---|---|
+| v0.3.4 | Fixed: proxied responses no longer carry the gate's security headers (XFO DENY blanked fnOS same-origin iframe suite apps through the gate) |
+| v0.3.3 | Add upstreams from the settings page (instant); logout chip; strip `accept-encoding` to keep injections working |
+| v0.3.2 | Multi-password multi-upstream (guest mode); 2-day sliding sessions; per-entry log column |
+| v0.3.1 | Unlock Host settings on non-loopback pages |
+| v0.3.0 | DSH built-in auth carrying |
 
 ## License
 
