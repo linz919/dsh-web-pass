@@ -7,3 +7,25 @@
         # （例如 systemd 的 Environment=DSH_WEB_PASS_PASSWORD=xxx），
         # 不要写进本文件——本文件会进 git / 仓库，写明文密码等于泄露。
         passwordEnv: DSH_WEB_PASS_PASSWORD
+        # 多密码多上游（访客 / 工具间）：一行一后端，一个密码进一个后端。
+        # 每条：label（显示名；管理员固定为 管理员/admin，其它新增时自填）、
+        # passwordEnv（该条密码的环境变量名；缺省则读文件 $DSH_HOME/dsh-web-pass/password.<i>）、
+        # host/port（后端地址；只绑 127.0.0.1 的本地服务，门是唯一对外入口）、
+        # clientHostTrust（默认 false；访客是干净 DSH 且要设置页时再开 true）、
+        # dsh（默认 false；后端是 DSH 才开 true，开了才代持 DSH cookie/改写模块；
+        #   反代 openclaw 等非 DSH 服务请保持 false，免得把 DSH cookie 带过去）、
+        # enabled（默认 true；false 等于停用）。
+        # 加删行需重起 dsh web 生效；密码值可在设置页活改；停用/删除即时生效。
+        # 不配 upstreams 即 v0.3.x 单密码行为（零迁移）。
+        # upstreams:
+        #   - label: 访客
+        #     passwordEnv: DSH_GUEST_PASS
+        #     host: 127.0.0.1
+        #     port: 3085
+        #     clientHostTrust: false
+        #     dsh: true
+        #   - label: 工具
+        #     passwordEnv: DSH_TOOL_PASS
+        #     host: 127.0.0.1
+        #     port: 5101
+        #     dsh: false
