@@ -1,4 +1,12 @@
 # dsh-web-pass
+## v0.3.7
+
+- **DSH v0.1.5-rc.1 compatibility**: the settings RPC now uses the DSH Connection `/api/<endpoint>` exact Fetch routes, so it no longer occupies the shared `/api` interceptor and normal APIs such as the session list work again.
+- **Fixed: password changes failed**: the settings-page "reset password" and the forced first-time setup used to throw a `ReferenceError` (they called a non-existent `writePasswordFile`).
+- **Fixed: a deleted upstream could not be re-added**: adding the same `host:port` again now reuses the original entry index instead of erroring out.
+- **More robust remote / LAN access**: alongside the existing `client-connection` module rewrite, a `__DSH_TRANSPORT__.ownsHost` pre-shim is injected as a second line of defence.
+
+Existing passwords, upstream entries, and sessions are unchanged.
 
 > [简体中文](README.md) | English
 
@@ -55,6 +63,14 @@ browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (
 - **Inbound forwarding-header hygiene**: client-supplied `Forwarded` / `X-Forwarded-*` / `X-Real-IP` etc. are dropped and rebuilt canonically per `trustProxy` (socket peer by default; trusted front-proxy's left-most value when enabled) — upstreams never see forgeable client assertions again.
 - **POST-only logout**: `GET /gate/logout` returns 405 (Logout CSRF protection); the logout chip now POSTs.
 - **Retry on session-persistence failure**: a failed append is immediately retried via a full compact rewrite; a still-failing write logs loudly (wording: failure is observable, but revocation durability is not guaranteed — a revoke during a disk outage followed by a restart may resurrect the session; a known consistency boundary, deliberately not fail-closed).
+
+**Fixed & adapted in v0.3.7 (DSH v0.1.5-rc.1)**
+
+- **Settings RPC moved off the shared `/api` interceptor**: the old build registered its handler as the single interceptor on the shared `/api` channel, which DSH 0.1.5's API Gateway also depends on — so ordinary `/api` requests (the session list in particular) could no longer fall through to the Gateway. Each endpoint now owns an exact `POST /api/<endpoint>` Fetch route (`ctx.connection.fetch.register`), still passing Connection's Host/Origin and browser authentication, leaving every other API untouched.
+- **Fixed: password changes / first-time setup failed**: `setPasswordHash` called `writePasswordFile`, which was never defined nor imported (a rename missed during the v0.3.5 module split), so both the settings-page reset and the forced first-time setup threw a `ReferenceError` that the error handler swallowed into a generic message. Corrected to `writePasswordHash`.
+- **Fixed: a deleted upstream could not be re-added**: soft-deleted entries stay in the entry table (their index must not move), while the append helper de-duplicates by `host:port` — so re-adding the same address was skipped and reported "runtime upstream not added to the in-memory entry table". The entry index is now **reused** and the soft delete lifted — order and index (the session binding key) stay put; a clash with a patch row is reported explicitly.
+- **Remote / LAN access, second line of defence**: besides the targeted `client-connection` module rewrite, a pre-shim is injected right after `<head>` setting `__DSH_TRANSPORT__.ownsHost` to true (before any client module is evaluated); the rewrite matcher also widened to any `dsh-client-connection` path.
+- **More observable upstream additions**: the server logs "add upstream request / success / failure"; the settings page shows a new row immediately (optimistic update) and reports clearly after an 8-second timeout, so it can be matched against the dsh log.
 
 > No runtime data lives in the plugin repo — everything is under `$DSH_HOME/dsh-web-pass/` (password hashes, sessions, logs).
 
@@ -123,7 +139,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 ### Adding, enabling and disabling
 
 - **One row = one password + one backend**: preferred way — fill **label + upstream (host:port)** in the settings-page upstream table and click "Add" (takes effect immediately, no restart; new rows **start disabled with no password**); or add a row to `upstreams` in `cordis.patch.yml` and **restart** `dsh web`. Rows added from the page persist in `$DSH_HOME/dsh-web-pass/upstreams.json` (0600, survives restart), coexist with patch rows and are appended after them; password values can be changed live on the settings "Web password" tab without a restart.
-- Disabling a row kicks its sessions instantly (no restart); deleting a row invalidates it immediately (soft delete: row hidden, index unchanged); deleting the patch row and restarting removes it completely; the admin entry cannot be disabled or deleted.
+- Disabling a row kicks its sessions instantly (no restart); deleting a row invalidates it immediately (soft delete: row hidden, index unchanged); deleting the patch row and restarting removes it completely; the admin entry cannot be disabled or deleted. **A deleted address can be added again** — the original entry index is reused and the soft delete lifted, so nothing is double-occupied and sessions bound to other entries are unaffected; an address already used by a `patch` row is reported explicitly.
 
 ### Password rules
 
@@ -160,11 +176,11 @@ DSH Web ships with a browser-auth layer (process launch-token exchanged for a 30
 
 DSH's client only mounts the host settings document when the page URL is `localhost`/`127.x`; via LAN IP or domain (including through this gate) settings degrade to memory mode — the **"Plugin configuration", "Models" and "General" tabs go completely blank** (pure-RPC features like the plugin list and chat are unaffected).
 
-The plugin performs one targeted rewrite of DSH's `client-connection` module at the proxy layer, forcing that check to true: the settings page works fully on 3081 (LAN IP / public domain). The browser URL is unchanged and the password gate remains the only entrance.
+The plugin forces that check to true with two measures: ① one targeted rewrite of DSH's `client-connection` module at the proxy layer; ② a pre-shim injected right after `<head>` setting `__DSH_TRANSPORT__.ownsHost` to true, before any client module is evaluated. The settings page works fully on 3081 (LAN IP / public domain); the browser URL is unchanged, the password gate remains the only entrance, and the server-side `/api` trust checks are unaffected.
 
 - On by default; set `clientHostTrust: false` to restore DSH's native behavior.
 - The rewritten module is served with `cache-control: no-cache`. **After upgrading, hard-refresh once per device (Ctrl+F5)** — the old module was cached `immutable` for a year and a normal refresh won't re-fetch; after one hard refresh it stays current automatically.
-- If a future DSH version changes that check (rewrite misses), the log reports "isLoopback anchor not found"; the settings page goes blank again while everything else keeps working — sync the anchor with the plugin update.
+- If a future DSH version changes that check (both measures miss), the log reports "isLoopback expression not found"; the settings page goes blank again while everything else keeps working — sync the anchor with the plugin update.
 
 ## Access log
 
@@ -190,7 +206,8 @@ The plugin performs one targeted rewrite of DSH's `client-connection` module at 
 
 | Version | Highlights |
 |---|---|
-| v0.3.6 | Hardening: upstream responses filtered for gateway-reserved cookies (all three exits); inbound forwarding-header hygiene rebuilt per trustProxy; POST-only logout; persistence-failure retry + loud log. 15 regression tests |
+| v0.3.7 | DSH v0.1.5-rc.1 compatibility: settings RPC moved off the shared `/api` interceptor onto exact `/api/<endpoint>` Fetch routes (normal APIs such as the session list work again). Fixed: password changes / first-time setup failed (`writePasswordFile` was undefined); a soft-deleted upstream could not be re-added (the original entry index is now reused). Improved: `__DSH_TRANSPORT__.ownsHost` pre-shim + wider rewrite matching; upstream-add logging and immediate settings-page feedback |
+| v0.3.6 | Hardening: upstream responses filtered for gateway-reserved cookies (all three exits); inbound forwarding-header hygiene rebuilt per trustProxy; POST-only logout; persistence-failure retry + loud log |
 | v0.3.5 | Hardening: true lockout with exponential backoff (success no longer clears the counter); 8MB injection buffer cap + disconnect aborts; gate session cookie stripped from forwarding; one-time setup token; sessions bound to upstream identity (re-login once after upgrade); re-login rotates sessions; upstream timeouts / request aborts / persistence error logs. **Same release includes a modular refactor**: `lib/` split by domain into 9 cohesive modules (largest 513 lines, index.js 684→392), pure code moves with zero behavior change |
 | v0.3.4 | Fixed: proxied responses no longer carry the gate's security headers (XFO DENY blanked fnOS same-origin iframe suite apps through the gate) |
 | v0.3.3 | Add upstreams from the settings page (instant); logout chip; strip `accept-encoding` to keep injections working |

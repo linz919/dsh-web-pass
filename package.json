@@ -1,9 +1,9 @@
 {
   "name": "dsh-web-pass",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "main": "lib/index.js",
-  "description": "DSH web-password gate: multi-password multi-upstream reverse proxy (one password, one backend; add upstreams from the settings page) + forced first-time setup + Settings 'Web password' tab + 2-day sliding sessions + size-capped access log + non-loopback settings unlock + true lockout with backoff + sessions bound to upstream identity + hardened proxy isolation (reserved cookies, forwarding-header hygiene, POST-only logout). Zero dependencies.",
+  "description": "DSH web-password gate: multi-password multi-upstream reverse proxy (one password, one backend; add upstreams from the settings page) + forced first-time setup + Settings 'Web password' tab + 2-day sliding sessions + size-capped access log + non-loopback settings unlock + true lockout with backoff + sessions bound to upstream identity + hardened proxy isolation (reserved cookies, forwarding-header hygiene, POST-only logout). v0.3.7 adds DSH v0.1.5-rc.1 settings-RPC compatibility, a soft-delete upstream reuse fix, and a browser transport shim. Zero dependencies.",
   "license": "MIT",
   "author": "linz919",
   "repository": {

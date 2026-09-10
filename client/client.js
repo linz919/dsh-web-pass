@@ -9,7 +9,7 @@ window.__ModuleLoader__.load({
     var React = require("react");
     var h = React.createElement;
 
-    var CHANNEL = "/dsh-web-pass";
+    var CHANNEL = "/api";
     var E_STATUS = "webpass.status";
     var E_PW_SET = "webpass.password.set";
     var E_ENTRY_SET = "webpass.entry.set";
@@ -113,11 +113,33 @@ window.__ModuleLoader__.load({
         var port = Number(portStr);
         if (!portStr || !Number.isInteger(port) || port <= 0 || port > 65535) { setAddErr("上游格式：host:port，端口 1-65535（如 127.0.0.1:3085）"); return; }
         setBusy(true); setAddErr(null);
+        var timer = setTimeout(function () {
+          setBusy(false);
+          setAddErr("新增请求超过 8 秒仍无响应。请看 dsh 日志中的“新增上游请求/成功/失败”记录。");
+        }, 8000);
         rpcCall(E_ENTRY_ADD, { label: lb, host: host, port: port, dsh: addDsh }).then(function (r) {
-          if (r && r.ok) { setAddLabel(""); setAddUp(""); setAddDsh(false); load(); }
-          else { setAddErr((r && r.error && r.error.message) || "新增失败"); }
-        }).catch(function (e) { setAddErr(String((e && e.message) || e)); })
-          .finally(function () { setBusy(false); });
+          clearTimeout(timer);
+          if (r && r.ok) {
+            var v = r.value || {};
+            var ne = v.entry || { label: lb, host: host, port: port, dsh: addDsh, enabled: false, visible: true, reachable: null, holding: false };
+            setStatus(function (old) {
+              var base = old || { entries: [] };
+              var arr = (base.entries || []).slice();
+              var idx = Number.isInteger(v.index) ? v.index : arr.length;
+              arr[idx] = { ...ne, visible: true, reachable: null };
+              return { ...base, entries: arr };
+            });
+            setAddLabel(""); setAddUp(""); setAddDsh(false); setBusy(false);
+            setTimeout(load, 0);
+          } else {
+            setBusy(false);
+            setAddErr((r && r.error && r.error.message) || "新增失败：服务器没有返回成功结果");
+          }
+        }).catch(function (e) {
+          clearTimeout(timer);
+          setBusy(false);
+          setAddErr("新增请求失败：" + String((e && e.message) || e));
+        });
       };
 
       var save = function () {
@@ -214,7 +236,8 @@ window.__ModuleLoader__.load({
             h("th", { style: V.th }, "上游"), h("th", { style: V.th }, "操作"))),
           h("tbody", null, [addFormRow].concat(rows.length ? rows : [h("tr", { key: "empty" }, h("td", { colSpan: 4, style: V.td }, "暂无条目"))]))),
         h("div", { style: { ...V.muted, marginTop: 8 } }, "新条目默认停用、无密码：在下方「密码重设」选中它设好密码，再打开行内开关。删除为软删（其余条目序号不变）| new rows start disabled without a password"),
-        h("div", { style: { ...V.muted, marginTop: 4 } }, "💡 同浏览器一次只保留一个登录身份（cookie 全浏览器共享）：要用多个身份同时在线，请开多个隐身窗口分别登录对应条目，无需退出 DSH | one identity per browser; use separate incognito windows to hold multiple entry logins side by side"),
+        h("div", { style: { ...V.muted, marginTop: 4 } }, "💡 同浏览器一次只保留一个登录身份（cookie 全浏览器共享）：要用多个身份同时在线，请开多个隐身窗口分别登录对应条目，无需退出 DSH | one identity per browser; use separate incognito windows to hold multiple entry logins side by side",
+        h("div", { style: { ...V.muted, marginTop: 4 } }, "🛠 0.3.7：新增成功先立即显示，后台再刷新连通状态；若 8 秒无响应，会明确提示并可结合 dsh 日志定位 | immediate add acknowledgement + background probe")),
         addErr ? h("div", { style: { color: "var(--dsw-alias-state-error-primary,#dc2626)", fontSize: 12, marginTop: 6 } }, "❌ " + addErr) : null,
         h("div", { style: { marginTop: 6 } },
           h("a", { href: "#", onClick: function (ev) { ev.preventDefault(); setShowHelp(!showHelp); }, style: { ...V.muted, textDecoration: "underline" } },
