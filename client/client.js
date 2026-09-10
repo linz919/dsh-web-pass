@@ -52,15 +52,15 @@ window.__ModuleLoader__.load({
       return { ok: checks.every(function (c) { return c.ok; }), checks: checks };
     }
 
-    var HELP_YAML = "# cordis.patch.yml（patch 行 = 结构化配置；与页面上新增的行共存）\n" +
+    var HELP_YAML = "# cordis.patch.yml（patch 行与页面新增行共存）\n" +
       "upstreams:\n" +
       "  - label: 访客\n" +
       "    passwordEnv: DSH_GUEST_PASS\n" +
       "    host: 127.0.0.1\n" +
       "    port: 3085\n" +
-      "    clientHostTrust: false  # 访客关（设置空白，改不了模型）\n" +
-      "    dsh: true              # 访客是干净 DSH；反代 openclaw 等非 DSH 请设 false\n" +
-      "# patch 行改后需重起（web profile 热载免重起）；本页新增的行存数据目录、重启保留";
+      "    clientHostTrust: false  # 访客关\n" +
+      "    dsh: true  # 非 DSH 后端设 false\n" +
+      "# patch 行改后重起 dsh web；本页新增行存数据目录、重启保留";
 
     function WPSSettingsTab(props) {
       var rpcCall = props.rpcCall;

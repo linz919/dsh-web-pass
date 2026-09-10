@@ -6,15 +6,14 @@ A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gat
 
 ```
 browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (owner DSH, runs this plugin)
-                                                    ├→ 127.0.0.1:3085 (clean guest DSH, optional)
-                                                    └→ 127.0.0.1:5101 (openclaw, fnOS and other local services, optional)
+                                                    └→ 127.0.0.1:5101 (openclaw and other local services, optional)
 ```
 
 ## Feature overview
 
 **Auth & sessions**
 
-- **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Too many wrong-password attempts (default 3) → temporary lockout (401).
+- **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Reaching the wrong-password cap (default 3) triggers a **true lockout** (401) that counts from the *last* failure; repeated lockouts escalate 2× at a time (up to 16×). Successful logins **do not clear** the failure counter.
 - **Forced first-time password setup** (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
 - **2-day sliding sessions** (since v0.3.2, previously fixed 24h): every authenticated request with less than 1 day of validity left renews to 2 days — daily users never get kicked, idle users re-login after 2 days.
 - **Logout anywhere** (v0.3.3): non-owner entries get a "🚪 logout" chip in the page corner — one click clears the session and returns to the login page; or visit `/gate/logout` directly (GET/POST).
@@ -37,6 +36,17 @@ browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (
 **Fixed in v0.3.4**
 
 - Proxied responses no longer carry the gate's security headers: every proxied response used to be stamped with `X-Frame-Options: DENY` and friends (meant to protect the login page), which blanked pages that backends like fnOS embed via same-origin iframes — Docker / suite apps showed "refused to connect" through the gate. These headers now apply only to the gate's own pages (login / logs); proxied responses keep the upstream's original headers, and any security headers the upstream itself sends still take effect.
+
+**Hardened in v0.3.5**
+
+- **Brute-force protection becomes a true lockout**: the failure counter is no longer cleared by successful logins (the old "any entry's success clears it" could be abused to brute-force other entries endlessly — verified by PoC); after reaching the cap the gate locks from the **last failure** for `loginLockMs`, escalating 2× per repeat (up to 16×) and resetting cleanly after the lock expires.
+- **Injection/rewrite buffering capped at 8MB**: oversized `text/html` responses automatically degrade to streaming pass-through (injection skipped), and a client disconnect aborts the upstream immediately — prevents OOMing the gate that shares the DSH process.
+- **The gate's session cookie is stripped from every forwarded request** and WebSocket handshake: `dws_session` no longer reaches any upstream (it used to be forwarded verbatim to `dsh: false` upstreams).
+- **One-time token for first-time setup**: `/gate/setup` must carry the HttpOnly cookie issued by GET `/gate-setup`, so drive-by cross-site form posts cannot hijack the gate.
+- **Sessions bind to the upstream identity**: a session stores both the entry index and the upstream `host:port`; both must match on every check — reordering patch rows or changing ports invalidates old sessions automatically (no more manual `sessions.jsonl` cleanup). **Upgrade note: log in again once after upgrading to v0.3.5.**
+- **Re-login rotates the session**: logging in while already logged in issues a new token and revokes the old one (the old build left orphan sessions).
+- Also: 2-minute upstream idle timeout, request-side aborts, a 512-connection cap, 502 pages no longer leak internal addresses, persistence errors are logged instead of swallowed, and `resolveEntries` now de-duplicates patch rows by host:port.
+- **Same-release modular refactor**: `lib/` split by domain into 9 cohesive modules (proxy core 513 / index assembly+RPC 392 / entry table 146 / sessions 114 / gate pages 79 / auth carrying 81 / access log 242 / password crypto 67 / rate limiter 51 / data-dir layout 13), duplicate implementations merged; the exported API is unchanged — pure code moves with zero behavior change.
 
 > No runtime data lives in the plugin repo — everything is under `$DSH_HOME/dsh-web-pass/` (password hashes, sessions, logs).
 
@@ -82,7 +92,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 | `port` | `3081` | Reverse proxy listen port |
 | `logViewerPort` | `3082` | Embedded log viewer port |
 | `maxLoginAttempts` | `3` | Wrong-password attempts allowed before lockout |
-| `loginLockMs` | `60000` | Lockout duration after too many attempts (ms) |
+| `loginLockMs` | `60000` | True-lockout base duration (ms, counted from the last failure; repeated lockouts escalate 2× up to 16×) |
 | `passwordEnv` | `DSH_WEB_PASS_PASSWORD` | Name of the env var providing the password |
 | `trustProxy` | `false` | Trust `X-Forwarded-For` / `CF-Connecting-IP` headers (for visitor IP identification and login rate limiting) |
 | `clientHostTrust` | `true` | Enable Host settings document on non-loopback pages (IP/domain access); `false` restores DSH's native behavior (settings only visible on localhost) |
@@ -90,7 +100,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 | `logMaxFiles` | `7` | Number of rotated history files to keep (`access.log.1` … `access.log.N`); older ones auto-deleted |
 | `upstreams` | `[]` | Multi-password multi-upstream table (see below): each row has `label` / `passwordEnv` / `host` / `port` / `clientHostTrust` / `dsh` / `enabled`; omit for single-password behavior |
 
-> **About `trustProxy`**: when off (default), visitor IPs and login rate limiting rely only on the socket address, preventing forged XFF headers from polluting logs or bypassing rate limits. Enable it only when a trusted reverse proxy (nginx, Cloudflare tunnel, etc.) sits in front of the gate.
+> **About `trustProxy`**: when off (default), visitor IPs and login rate limiting rely only on the socket address — forged forwarding headers are never adopted. When on, `X-Forwarded-For` / `CF-Connecting-IP` become the **rate-limit key**, so enable it only behind a trusted reverse proxy that **overwrites** those headers (nginx with `proxy_set_header X-Forwarded-For $remote_addr;`, Cloudflare tunnel, etc.); a merely pass-through proxy would hand attackers an unlimited set of rate-limit keys.
 
 ### Password storage
 
@@ -114,7 +124,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 
 ### Login behavior
 
-- **One login box for all**: wrong passwords always report "wrong password, please retry" without revealing which entry; rate limiting shares one counter across entries. If a backend is down, that entry's login reports "this entrance is currently unavailable" while the owner is unaffected.
+- **One login box for all**: wrong passwords always report "wrong password, please retry" without revealing which entry; rate limiting is global per source IP (successful logins do not clear it). If a backend is down, that entry's login reports "this entrance is currently unavailable" while the owner is unaffected.
 - **Multiple identities in one browser**: cookies are shared per browser (not per tab), so one browser holds at most one entry's login at a time; to use several identities side by side (e.g. DSH and fnOS), open separate **private/incognito windows** and log into the respective entries (their cookies are independent) — no need to log out of each other.
 
 ### Isolation and management
@@ -126,7 +136,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 
 ### Entry index and session binding (upgrade notes)
 
-- **Entry index = session binding key**: sessions bind to an entry's position in the table, ordered "admin → patch rows → page-added rows". Append-only; soft deletes keep indexes stable; if you manually reorder `upstreams` rows in the patch, clear `sessions.jsonl` in the same directory before restarting, otherwise old sessions (≤2 days) may map to a different backend.
+- **Entry index + upstream address = session binding key** (v0.3.5): a session records both the entry index and that entry's upstream `host:port` at issue time; both must match on every check — reordering patch rows or changing ports and restarting invalidates old sessions automatically (just log in again; no manual `sessions.jsonl` cleanup needed). Order remains "admin → patch rows → page-added rows", append-only with stable soft-deleted indexes.
 - **Upgrade note**: both DSH instances share one copy of the program — upgrade once; restart the owner's first and verify owner login + settings page, then restart the guest's and verify it stays clean.
 
 ## DSH built-in auth carrying
@@ -134,7 +144,7 @@ From the plugin config (the `config` section in `cordis.patch.yml`, optional):
 DSH Web ships with a browser-auth layer (process launch-token exchanged for a 30-day cookie). This plugin runs inside the `dsh web` process and can obtain a process-token URL via `ctx.connection.authenticatedUrl()`, internally exchange it for DSH's persistent cookie, and **inject it into every forwarded request and WebSocket handshake** — visitors behind the password gate never see DSH's "authentication required".
 
 - Automatic: warm-up on start + silent refresh every 6 hours; self-heals after DSH restarts (the next request re-fetches on failure).
-- Secure: the launch-token never leaves the process or the network; only the password gate is exposed externally.
+- Secure: the launch-token never travels through any plugin forwarding path and never reaches any upstream or the browser; only the password gate is exposed externally. (Note: the DSH platform itself prints a token-bearing start URL to the service's stdout — that is DSH behavior, not this plugin's; protect service logs per your DSH ops practice.)
 - Visible status: the settings "Web password" tab shows a `dshAuthHolding` field (whether the DSH cookie is being carried).
 - Zero configuration: enabled automatically whenever `dsh web` provides `ctx.connection`; falls back to the old behavior otherwise (visitors still need a DSH token).
 
@@ -166,12 +176,13 @@ The plugin performs one targeted rewrite of DSH's `client-connection` module at 
 - One password per backend (multi-password multi-upstream), no accounts / 2FA.
 - **Always expose via HTTPS** (upstream TLS); never port-map a plain HTTP port straight to the internet.
 - The gate's own pages (login / logs) carry `X-Frame-Options: DENY` and other security headers; proxied responses get no extra security headers (since v0.3.4), and whatever the upstream itself sends passes through as-is.
-- Login rate limiting and log IPs use the socket address by default; with `trustProxy` they use `X-Forwarded-For` / `CF-Connecting-IP` — for identification, not a security boundary.
+- Login rate limiting and log IPs use the socket address by default (forged forwarding headers are ignored); with `trustProxy` they switch to `X-Forwarded-For` / `CF-Connecting-IP` as the **rate-limit key** — enable only behind a trusted proxy that overwrites those headers, otherwise it hands attackers an unlimited set of rate-limit keys.
 
 ## Version history
 
 | Version | Highlights |
 |---|---|
+| v0.3.5 | Hardening: true lockout with exponential backoff (success no longer clears the counter); 8MB injection buffer cap + disconnect aborts; gate session cookie stripped from forwarding; one-time setup token; sessions bound to upstream identity (re-login once after upgrade); re-login rotates sessions; upstream timeouts / request aborts / persistence error logs. **Same release includes a modular refactor**: `lib/` split by domain into 9 cohesive modules (largest 513 lines, index.js 684→392), pure code moves with zero behavior change |
 | v0.3.4 | Fixed: proxied responses no longer carry the gate's security headers (XFO DENY blanked fnOS same-origin iframe suite apps through the gate) |
 | v0.3.3 | Add upstreams from the settings page (instant); logout chip; strip `accept-encoding` to keep injections working |
 | v0.3.2 | Multi-password multi-upstream (guest mode); 2-day sliding sessions; per-entry log column |
