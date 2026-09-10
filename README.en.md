@@ -6,7 +6,8 @@ A **zero-dependency** DeepSeek Harness web plugin that puts a **web password gat
 
 ```
 browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (owner DSH, runs this plugin)
-                                                    └→ 127.0.0.1:5101 (openclaw and other local services, optional)
+                                                    ├→ 127.0.0.1:3085 (clean guest DSH, optional)
+                                                    └→ 127.0.0.1:5101 (openclaw, fnOS and other local services, optional)
 ```
 
 ## Feature overview
@@ -16,7 +17,7 @@ browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (
 - **Cookie session authentication** runs on a reverse proxy (not nginx Basic Auth). Reaching the wrong-password cap (default 3) triggers a **true lockout** (401) that counts from the *last* failure; repeated lockouts escalate 2× at a time (up to 16×). Successful logins **do not clear** the failure counter.
 - **Forced first-time password setup** (entered twice; must be ≥8 chars with upper- and lowercase letters and digits).
 - **2-day sliding sessions** (since v0.3.2, previously fixed 24h): every authenticated request with less than 1 day of validity left renews to 2 days — daily users never get kicked, idle users re-login after 2 days.
-- **Logout anywhere** (v0.3.3): non-owner entries get a "🚪 logout" chip in the page corner — one click clears the session and returns to the login page; or visit `/gate/logout` directly (GET/POST).
+- **Logout anywhere** (v0.3.3; POST-only since v0.3.6): non-owner entries get a "🚪 logout" chip in the page corner — one click clears the session and returns to the login page; `/gate/logout` accepts POST only (Logout CSRF protection).
 
 **Multi-password multi-upstream (guest mode, v0.3.2)**
 
@@ -39,14 +40,21 @@ browser → (TLS / reverse proxy) → dsh-web-pass :3081 ┬→ 127.0.0.1:3080 (
 
 **Hardened in v0.3.5**
 
-- **Brute-force protection becomes a true lockout**: the failure counter is no longer cleared by successful logins (the old "any entry's success clears it" could be abused to brute-force other entries endlessly — verified by PoC); after reaching the cap the gate locks from the **last failure** for `loginLockMs`, escalating 2× per repeat (up to 16×) and resetting cleanly after the lock expires.
+- **Brute-force protection becomes a true lockout**: the failure counter is no longer cleared by successful logins (the old "any entry's success clears it" could be abused to brute-force other entries endlessly — verified by PoC); after reaching the cap the gate locks from the **last failure** for `loginLockMs × backoff multiplier`, escalating 2× per repeat (up to 16×); the multiplier survives lock expiry and returns to 1× only after 1 hour with no failures; probes during a lock are not counted and do not extend it.
 - **Injection/rewrite buffering capped at 8MB**: oversized `text/html` responses automatically degrade to streaming pass-through (injection skipped), and a client disconnect aborts the upstream immediately — prevents OOMing the gate that shares the DSH process.
 - **The gate's session cookie is stripped from every forwarded request** and WebSocket handshake: `dws_session` no longer reaches any upstream (it used to be forwarded verbatim to `dsh: false` upstreams).
 - **One-time token for first-time setup**: `/gate/setup` must carry the HttpOnly cookie issued by GET `/gate-setup`, so drive-by cross-site form posts cannot hijack the gate.
 - **Sessions bind to the upstream identity**: a session stores both the entry index and the upstream `host:port`; both must match on every check — reordering patch rows or changing ports invalidates old sessions automatically (no more manual `sessions.jsonl` cleanup). **Upgrade note: log in again once after upgrading to v0.3.5.**
 - **Re-login rotates the session**: logging in while already logged in issues a new token and revokes the old one (the old build left orphan sessions).
 - Also: 2-minute upstream idle timeout, request-side aborts, a 512-connection cap, 502 pages no longer leak internal addresses, persistence errors are logged instead of swallowed, and `resolveEntries` now de-duplicates patch rows by host:port.
-- **Same-release modular refactor**: `lib/` split by domain into 9 cohesive modules (proxy core 513 / index assembly+RPC 392 / entry table 146 / sessions 114 / gate pages 79 / auth carrying 81 / access log 242 / password crypto 67 / rate limiter 51 / data-dir layout 13), duplicate implementations merged; the exported API is unchanged — pure code moves with zero behavior change.
+- **Same-release modular refactor**: `lib/` split by domain into 9 cohesive modules with duplicate implementations merged; the exported API is unchanged — pure code moves with zero behavior change.
+
+**Hardened in v0.3.6 (hardening release, no new features, no data migration)**
+
+- **Upstream responses cannot write gateway-reserved cookies**: `dws_session` / `dws_setup` are filtered on all three exits (transparent, rewritten, WebSocket handshake) via one shared `sanitizeUpstreamSetCookie()`; upstreams can only set their own business cookies.
+- **Inbound forwarding-header hygiene**: client-supplied `Forwarded` / `X-Forwarded-*` / `X-Real-IP` etc. are dropped and rebuilt canonically per `trustProxy` (socket peer by default; trusted front-proxy's left-most value when enabled) — upstreams never see forgeable client assertions again.
+- **POST-only logout**: `GET /gate/logout` returns 405 (Logout CSRF protection); the logout chip now POSTs.
+- **Retry on session-persistence failure**: a failed append is immediately retried via a full compact rewrite; a still-failing write logs loudly (wording: failure is observable, but revocation durability is not guaranteed — a revoke during a disk outage followed by a restart may resurrect the session; a known consistency boundary, deliberately not fail-closed).
 
 > No runtime data lives in the plugin repo — everything is under `$DSH_HOME/dsh-web-pass/` (password hashes, sessions, logs).
 
@@ -182,6 +190,7 @@ The plugin performs one targeted rewrite of DSH's `client-connection` module at 
 
 | Version | Highlights |
 |---|---|
+| v0.3.6 | Hardening: upstream responses filtered for gateway-reserved cookies (all three exits); inbound forwarding-header hygiene rebuilt per trustProxy; POST-only logout; persistence-failure retry + loud log. 15 regression tests |
 | v0.3.5 | Hardening: true lockout with exponential backoff (success no longer clears the counter); 8MB injection buffer cap + disconnect aborts; gate session cookie stripped from forwarding; one-time setup token; sessions bound to upstream identity (re-login once after upgrade); re-login rotates sessions; upstream timeouts / request aborts / persistence error logs. **Same release includes a modular refactor**: `lib/` split by domain into 9 cohesive modules (largest 513 lines, index.js 684→392), pure code moves with zero behavior change |
 | v0.3.4 | Fixed: proxied responses no longer carry the gate's security headers (XFO DENY blanked fnOS same-origin iframe suite apps through the gate) |
 | v0.3.3 | Add upstreams from the settings page (instant); logout chip; strip `accept-encoding` to keep injections working |
